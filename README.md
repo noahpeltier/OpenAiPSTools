@@ -4,6 +4,8 @@ A fully PowerShell-native class-based interface for interacting with OpenAI's `/
 
 In short, it's a lightweight AI function runtime, designed to let you build AI-assisted workflows using plain PowerShell.
 
+I learned a LOT trying to get the code wokring to this point. It made more sense writing it this way due to how statefull the process needs to be.
+
 ---
 
 ## 🚀 Features
