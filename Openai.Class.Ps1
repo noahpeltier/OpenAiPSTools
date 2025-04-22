@@ -1,14 +1,23 @@
 class OpenAi {
+    # Holds the web session with headers (auth, content-type)
     [object]$WebSession
+
+    # Payload structure that gets sent to OpenAI's /responses API
     [hashtable]$Body
+
+    # Stores the last API response so we can chain the conversation
     [object]$PreviousResponse
+
+    # Endpoint for the OpenAI /v1/responses API
     [string]$Uri = "https://api.openai.com/v1/responses"
 
+    # Constructor: initializes the API client with API key and model
     OpenAi([string]$ApiKey, [string]$Model) {
         $this.WebSession = $this.NewWebSession($ApiKey)
         $this.Body = $this.NewRequestBody($Model)
     }
 
+    # Builds a new default request body with the model and empty input/tool lists
     [hashtable]
     NewRequestBody([string]$Model) {
         return @{
@@ -19,6 +28,7 @@ class OpenAi {
         }
     }
 
+    # Builds the WebRequestSession and adds required headers
     [Microsoft.PowerShell.Commands.WebRequestSession]
     NewWebSession([string]$ApiKey) {
         $Session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
@@ -27,8 +37,10 @@ class OpenAi {
         return $Session
     }
 
+    # Sends a message to OpenAI and handles response + function calling
     [string] GetTextResponse([string]$Message) {
         $this.AddMessageInput($Message)
+
         if ($this.PreviousResponse) {
             $this.Body.previous_response_id = $this.PreviousResponse.id
         }
@@ -36,7 +48,7 @@ class OpenAi {
         $Response = Invoke-RestMethod -Uri $this.Uri -Method Post -Body ($this.Body | ConvertTo-Json -Depth 100) -WebSession $this.WebSession
         $this.PreviousResponse = $Response
 
-        # Auto-handle function calls if present
+        # If a function_call is requested, handle it automatically
         if ($Response.output.type -eq "function_call") {
             return $this.InvokeFunctionIfPresent($Response)
         }
@@ -44,8 +56,8 @@ class OpenAi {
         return $this.WriteTextResponse($Response)
     }
 
+    # Sends a request using current input/tool state, without adding a new message
     [string] GetResponse() {
-
         if ($this.PreviousResponse) {
             $this.Body.previous_response_id = $this.PreviousResponse.id
         }
@@ -53,7 +65,6 @@ class OpenAi {
         $Response = Invoke-RestMethod -Uri $this.Uri -Method Post -Body ($this.Body | ConvertTo-Json -Depth 20) -WebSession $this.WebSession
         $this.PreviousResponse = $Response
 
-        # Auto-handle function calls if present
         if ($Response.output.type -eq "function_call") {
             return $this.InvokeFunctionIfPresent($Response)
         }
@@ -61,15 +72,18 @@ class OpenAi {
         return $this.WriteTextResponse($Response)
     }
 
+    # Returns the final assistant text and clears the input array for the next call
     [string] WriteTextResponse($Response) {
         $this.ResetInputs()
         return $Response.output.content.text
     }
 
+    # Empties the input array (messages or function outputs)
     [void] ResetInputs() {
         $this.Body.input = [System.Collections.Generic.List[object]]::new()
     }
 
+    # Adds a user message to the input list
     [void] AddMessageInput([string]$Text) {
         $Object = @{
             role    = "user"
@@ -78,60 +92,69 @@ class OpenAi {
         $null = $this.Body.input.Add($Object)
     }
 
+    # Loads a tool definition (.psd1 or .json) and adds it to the body
     [void] AddTool([string]$Path) {
-        $item = get-item -Path $Path
+        $item = Get-Item -Path $Path
         if ($item.Extension -eq ".psd1") {
             $Tool = Import-PowerShellDataFile -Path $Path
             $null = $this.Body.tools.Add($Tool)
         }
-        elseif (($item.Extension -eq ".json")) {
-            $Tool = (Get-Content -Path $path -Raw | ConvertFrom-Json -Depth 10)
+        elseif ($item.Extension -eq ".json") {
+            $Tool = (Get-Content -Path $Path -Raw | ConvertFrom-Json -Depth 10)
             $null = $this.Body.tools.Add($Tool)
         }
     }
 
+    # Adds a function call output object to the input array (OpenAI expects this)
     [void] AddFuncResponseInput([string]$CallId, [object]$Output) {
         $Object = @{
             type    = "function_call_output"
             call_id = $CallId
-            output  = ($Output | Out-string)
+            output  = ($Output | Out-String)
         }
         $null = $this.Body.input.Add($Object)
     }
 
+    # Loops through tool calls until a normal response is returned
     [string] InvokeFunctionIfPresent($Response) {
         $CurrentResponse = $Response
-    
+
         while ($true) {
             $LastOutput = $CurrentResponse.output[-1]
-    
+
+            # If it's not a function call, return final response
             if ($LastOutput.type -ne "function_call") {
                 $this.ResetInputs()
                 return $this.WriteTextResponse($CurrentResponse)
             }
-    
+
             $Command   = ($LastOutput.name -replace "\s+")
             $Arguments = ($LastOutput.arguments | ConvertFrom-Json -AsHashtable)
-            $Arguments.Add("ErrorAction","Stop")
+            $Arguments.Add("ErrorAction", "Stop")  # Force errors to trigger catch
             $CallId    = $LastOutput.call_id
-    
+
             try {
+                # Execute the actual PowerShell function locally
                 $FuncCallOutput = & $Command @Arguments
             }
             catch {
+                # Return the error string as the tool output if it fails
                 $FuncCallOutput = "⚠️ Function '$Command' failed: $($_.Exception.Message)"
             }
-    
+
+            # Add the function_call_output to the next input
             $this.AddFuncResponseInput($CallId, $FuncCallOutput)
             $this.Body.previous_response_id = $CurrentResponse.id
-    
+
+            # Resubmit to get the assistant's response
             $CurrentResponse = Invoke-RestMethod -Uri $this.Uri -Method Post -Body ($this.Body | ConvertTo-Json -Depth 20) -WebSession $this.WebSession
             $this.PreviousResponse = $CurrentResponse
         }
-    
+
         return ""
-    }   
-    
+    }
+
+    # Completely reset session: forget previous responses and input history
     [void] Forget() {
         $this.PreviousResponse = $null
         $this.ResetInputs()
