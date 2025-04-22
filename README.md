@@ -39,40 +39,43 @@ $ai.GetTextResponse("Search the web for the latest CVE on microsoft and email it
 $ai.Forget()
 ```
 
-## Tools
+## 🧰 Tools (Local PowerShell Function Execution)
 
-Defining tools is easy. Just write out a tool following OpenAi's tool schema as a psd1 file.
-This is one exmaple I've found very usefull
+One of the most powerful features of this framework is its ability to **execute local PowerShell functions defined as tools** — all triggered intelligently by OpenAI using its function calling capability.
+
+You simply define a PowerShell-compatible OpenAI function schema in a `.psd1` or `.json` file, and map it to a real PowerShell function you've written.
+
+When the AI determines that a function should be called, your actual PowerShell function is executed — locally, safely, and with structured input. The result is then returned back to OpenAI for further conversation.
+
+---
+
+### 🧪 Example Tool: `Invoke-MgGraphRequest`
+
+This tool definition tells the AI how to call a function that interacts with the Microsoft Graph API.
 
 ```powershell
 @{
     type        = "function"
-    name        = "Invoke-mggraphRequest"
-    description = "Invoke a REST request using the Graph API"
+    name        = "Invoke-MgGraphRequest"
+    description = "Invokes a REST request using the Graph API"
     parameters  = @{
-        type                 = "object"
-        required             = @("Uri","OutputType","Headers")  # <- name is now optional
-        properties           = @{
+        type       = "object"
+        required   = @("Uri", "OutputType", "Headers")
+        properties = @{
             Uri = @{
                 type        = "string"
-                description = "Use logic from the users request to create a path for this for example https://graph.microsoft.com/beta/users"
+                description = "Full path, e.g. https://graph.microsoft.com/v1.0/users"
             }
             OutputType = @{
                 type        = "string"
-                description = "The output type for this request. Needs to always be Json so don't change it"
+                description = "Set to 'Json'."
             }
             Headers = @{
-                type        = @("object","null")
-                description = "use this when nessiary, for example when using the `$filter iun querries, Header should be a hashtable @{ConsistencyLevel = 'eventual'}"
+                type        = @("object", "null")
+                description = "Optional headers, e.g. @{ ConsistencyLevel = 'eventual' }"
             }
         }
         additionalProperties = $false
     }
 }
-```
 
-Wich allows you to ask it to perform queries to GraphAPI
-
-```powershell
-$ai.GetTextResponse("Find me users who were created in the last 30 days")
-```
