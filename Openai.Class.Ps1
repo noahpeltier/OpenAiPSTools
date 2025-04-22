@@ -138,10 +138,3 @@ class OpenAi {
         $this.Body.previous_response_id = $null
     }
 }
-
-$ai = [OpenAi]::new($env:apiKey, "gpt-4.1-mini")
-$ai.addTool(".\tools\WebSearch.psd1")
-$ai.addTool(".\tools\Email.psd1")
-$ai.AddTool(".\tools\PSDrive.psd1")
-$ai.AddTool(".\tools\GraphRequest.psd1")
-$ai.AddTool(".\tools\aduser.psd1")
