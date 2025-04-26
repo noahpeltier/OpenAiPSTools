@@ -106,11 +106,11 @@ class OpenAi {
     }
 
     # Adds a function call output object to the input array (OpenAI expects this)
-    [void] AddFuncResponseInput([string]$CallId, [object]$Output) {
+    [void] AddFuncResponseInput([string]$CallId, $Output) {
         $Object = @{
             type    = "function_call_output"
             call_id = $CallId
-            output  = ($Output | Out-String)
+            output  = $Output
         }
         $null = $this.Body.input.Add($Object)
     }
@@ -130,24 +130,22 @@ class OpenAi {
 
             $Command   = ($LastOutput.name -replace "\s+")
             $Arguments = ($LastOutput.arguments | ConvertFrom-Json -AsHashtable)
-            $Arguments.Add("ErrorAction", "Stop")  # Force errors to trigger catch
+            #$Arguments.Add("ErrorAction", "Stop")  # Force errors to trigger catch
             $CallId    = $LastOutput.call_id
-
-            try {
-                # Execute the actual PowerShell function locally
-                $FuncCallOutput = & $Command @Arguments
+            
+            # Execute the actual PowerShell function locally
+            $ExecBlock = {
+                & $using:Command @using:Arguments
             }
-            catch {
-                # Return the error string as the tool output if it fails
-                $FuncCallOutput = "⚠️ Function '$Command' failed: $($_.Exception.Message)"
-            }
-
+            $FuncCallOutput = Invoke-SafeScriptBlock -ScriptBlock $ExecBlock
+            
             # Add the function_call_output to the next input
-            $this.AddFuncResponseInput($CallId, $FuncCallOutput)
+            $this.AddFuncResponseInput($CallId, $FuncCallOutput.RawOutput)
+
             $this.Body.previous_response_id = $CurrentResponse.id
 
             # Resubmit to get the assistant's response
-            $CurrentResponse = Invoke-RestMethod -Uri $this.Uri -Method Post -Body ($this.Body | ConvertTo-Json -Depth 20) -WebSession $this.WebSession
+            $CurrentResponse = Invoke-RestMethod -Uri $this.Uri -Method Post -Body ($this.Body | ConvertTo-Json -Depth 100) -WebSession $this.WebSession
             $this.PreviousResponse = $CurrentResponse
         }
 
@@ -159,5 +157,51 @@ class OpenAi {
         $this.PreviousResponse = $null
         $this.ResetInputs()
         $this.Body.previous_response_id = $null
+    }
+}
+function Invoke-SafeScriptBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $ScriptBlock
+    )
+    if ($ScriptBlock -is "string") {
+        $ScriptBlock = [scriptblock]::Create($ScriptBlock)
+    }
+    $output = New-Object System.Collections.Generic.List[object]
+    $errors = New-Object System.Collections.Generic.List[object]
+    $exceptions = New-Object System.Collections.Generic.List[object]
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+    & {
+        $ErrorActionPreference = 'Continue'  # Important: Don't throw, just generate error records
+
+        $allResults = & $ScriptBlock 2>&1
+
+        foreach ($item in $allResults) {
+            if ($item -is [System.Management.Automation.ErrorRecord]) {
+                $errors.Add($item)
+            }
+            else {
+                try {
+                    # Try to process normally
+                    $output.Add($item)
+                }
+                catch {
+                    $exceptions.Add($_)
+                }
+            }
+        }
+    }
+
+    $stopwatch.Stop()
+
+    return [PSCustomObject]@{
+        Success    = if ($errors.Count -eq 0 -and $exceptions.Count -eq 0) { $true } else { $false }
+        StdOut     = $output.ToArray()
+        StdErr     = $errors.ToArray()
+        Exceptions = $exceptions.ToArray()
+        RawOutput  = ($output | Out-String) + ($errors | Out-String) + ($exceptions | Out-String)
+        Duration   = $stopwatch.Elapsed
     }
 }
